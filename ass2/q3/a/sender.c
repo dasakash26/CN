@@ -17,8 +17,6 @@ typedef struct {
     uint8_t seq;
     uint16_t len;
     uint16_t checksum;
-    uint8_t parity;    // Added for error correction
-    uint8_t error_bit; // Explicit error bit for testing
     char data[MAX_DATA_SIZE];
 } __attribute__((packed)) Frame;
 
@@ -30,7 +28,6 @@ typedef struct {
 Frame window[MAX_SEQ_NUM];
 int base = 0;
 int next_seq = 0;
-int retransmission_count = 0;
 
 uint16_t calculate_checksum(const char* data, size_t length) {
     uint16_t sum = 0;
@@ -40,34 +37,12 @@ uint16_t calculate_checksum(const char* data, size_t length) {
     return ~sum; 
 }
 
-// Calculate simple parity for error correction (even parity)
-uint8_t calculate_parity(const char* data, size_t length) {
-    uint8_t parity = 0;
-    for (size_t i = 0; i < length; i++) {
-        // Count number of 1 bits in each byte
-        uint8_t byte = data[i];
-        while (byte) {
-            parity ^= (byte & 1);
-            byte >>= 1;
-        }
-    }
-    return parity;
-}
-
-// Simplified error injection - just set the error bit
-void inject_error(Frame *frame) {
+void inject_error(char* data, size_t len) {
     if ((double)rand() / RAND_MAX < ERROR_RATE) {
-        frame->error_bit = 1;
-        printf("[ERROR] Injected error (error_bit set to 1)\n");
-    } else {
-        frame->error_bit = 0;
+        int pos = rand() % len;
+        data[pos] ^= 0x01; 
+        printf("[ERROR] Injected error at position %d\n", pos);
     }
-}
-
-// Apply error correction data to the frame
-void apply_error_correction(Frame* f) {
-    f->parity = calculate_parity(f->data, f->len);
-    printf("[SENDER] Applied error correction (parity: %d)\n", f->parity);
 }
 
 int connect_to_receiver() {
@@ -94,15 +69,12 @@ int connect_to_receiver() {
 }
 
 int send_frame(int sockfd, Frame *f) {
-    // Apply error correction before calculating checksum
-    apply_error_correction(f);
-    
     f->checksum = calculate_checksum(f->data, f->len);
-    inject_error(f);
+    inject_error(f->data, f->len);
     
     int sent = send(sockfd, f, sizeof(uint8_t) + sizeof(uint16_t) + 
-                    sizeof(uint16_t) + sizeof(uint8_t) + sizeof(uint8_t) + f->len, 0);
-    printf("[SND] Sent Seq=%d%s\n", f->seq, f->error_bit ? " (with error bit set)" : "");
+                    sizeof(uint16_t) + f->len, 0);
+    printf("[SND] Sent Seq=%d\n", f->seq);
     return sent;
 }
 
@@ -130,10 +102,8 @@ int main() {
     int sockfd = connect_to_receiver();
     struct timeval tv = {.tv_sec = 0, .tv_usec = 500000}; // 500ms timeout
     
-    printf("---- Simplified TCP Sender ----\n");
+    printf("----  TCP Sender ----\n");
     printf("Error rate: %.1f%%\n", ERROR_RATE * 100);
-    printf("Error correction: ENABLED (parity)\n");
-    printf("Error bit: ENABLED (explicit error flagging)\n");
 
     while (1) {
         // Send frames if window has space
@@ -157,23 +127,15 @@ int main() {
             
             if (ack.error) {
                 // Retransmit the frame with error
-                printf("[SND] Retransmission #%d for frame %d\n", ++retransmission_count, ack.ack);
-                
-                // Reset error bit before retransmission
-                window[ack.ack].error_bit = 0;
+                printf("[SND] Retransmitting frame %d\n", ack.ack);
                 send_frame(sockfd, &window[ack.ack]);
             } else {
-                retransmission_count = 0;
                 base = (ack.ack + 1) % MAX_SEQ_NUM;
-                printf("[SND] Window advanced to base=%d\n", base);
             }
         } else if (received < 0) {
             // Timeout - retransmit all frames in window
             printf("[SND] Timeout, retransmitting all frames in window\n");
             for (int i = base; i != next_seq; i = (i + 1) % MAX_SEQ_NUM) {
-                printf("[SND] Retransmitting frame %d after timeout\n", i);
-                // Reset error bit before retransmission
-                window[i].error_bit = 0;
                 send_frame(sockfd, &window[i]);
             }
         } else {

@@ -1,3 +1,6 @@
+// receiver_gbn_tcp.c
+// Go-Back-N receiver over TCP
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,154 +8,72 @@
 #include <arpa/inet.h>
 
 #define MAX_DATA_SIZE   1024
-#define SERVER_PORT     12345
-#define MAX_SEQ_NUM     3      
+#define DATA_PORT       12345
+#define ACK_PORT        12346
 
 typedef struct {
     uint8_t seq;
     uint16_t len;
-    uint16_t checksum;
-    uint8_t parity;    // Added for error correction
-    uint8_t error_bit; // Explicit error bit for testing
     char data[MAX_DATA_SIZE];
 } __attribute__((packed)) Frame;
 
 typedef struct {
     uint8_t ack;
-    uint8_t error;
 } __attribute__((packed)) Ack;
 
-// Simple checksum - sum all bytes and return the 16-bit complement
-uint16_t calculate_checksum(const char* data, size_t length) {
-    uint16_t sum = 0;
-    for (size_t i = 0; i < length; i++) {
-        sum += (uint8_t)data[i];
-    }
-    return ~sum; // Return 1's complement
+int make_listener(int port) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(port),
+        .sin_addr.s_addr = INADDR_ANY
+    };
+    bind(sock, (struct sockaddr*)&addr, sizeof(addr));
+    listen(sock, 5);
+    return sock;
 }
 
-// Calculate simple parity for error detection (even parity)
-uint8_t calculate_parity(const char* data, size_t length) {
-    uint8_t parity = 0;
-    for (size_t i = 0; i < length; i++) {
-        // Count number of 1 bits in each byte
-        uint8_t byte = data[i];
-        while (byte) {
-            parity ^= (byte & 1);
-            byte >>= 1;
-        }
-    }
-    return parity;
-}
-
-int start_server() {
-    int server_fd, client_fd;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len = sizeof(client_addr);
-
-    // Create and setup server socket
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("socket");
-        exit(1);
-    }
-
-    int reuse = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-    
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_PORT);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    
-    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("bind");
-        exit(1);
-    }
-
-    // Listen and accept connection
-    if (listen(server_fd, 1) < 0) {
-        perror("listen");
-        exit(1);
-    }
-    
-    printf("Waiting for connection on port %d...\n", SERVER_PORT);
-    if ((client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len)) < 0) {
-        perror("accept");
-        exit(1);
-    }
-    
-    printf("Connected to %s\n", inet_ntoa(client_addr.sin_addr));
-    close(server_fd);
-    return client_fd;
-}
-
-void send_ack(int sock, uint8_t seq_num, uint8_t has_error) {
-    Ack ack = {.ack = seq_num, .error = has_error};
-    send(sock, &ack, sizeof(ack), 0);
-    printf("[ACK] Sent ACK=%d, Error=%d\n", seq_num, has_error);
+// accept one connection and return its fd
+int accept_conn(int listener) {
+    return accept(listener, NULL, NULL);
 }
 
 int main() {
-    int client_fd = start_server();
+    int data_lst = make_listener(DATA_PORT);
+    int ack_lst  = make_listener(ACK_PORT);
+
     uint8_t expected_seq = 0;
-    
-    printf("---- Simplified TCP Receiver ----\n");
-    printf("Error correction: ENABLED (parity)\n");
-    printf("Error bit detection: ENABLED\n");
+    printf("---- GBN receiver over TCP ----\n");
 
     while (1) {
-        // Receive frame
-        Frame frame;
-        int bytes = recv(client_fd, &frame, sizeof(frame), 0);
-        
-        if (bytes <= 0) {
-            if (bytes == 0) printf("Connection closed by sender\n");
-            else perror("recv");
-            break;
-        }
-        
-        printf("[RCV] Got frame Seq=%d, %d bytes\n", frame.seq, frame.len);
+        // accept data connection
+        int ds = accept_conn(data_lst);
+        Frame f;
+        ssize_t n = read(ds, &f, sizeof(f));
+        close(ds);
+        if (n < (ssize_t)(sizeof(uint8_t)+sizeof(uint16_t))) continue;
 
-        // First check for explicit error bit
-        if (frame.error_bit) {
-            printf("    Error bit detected! Requesting retransmission\n");
-            send_ack(client_fd, frame.seq, 1);  // Request retransmission
-            continue;
-        }
+        printf("[RCV] Got Seq=%d, %d bytes\n", f.seq, f.len);
 
-        // Validate checksum
-        uint16_t computed_checksum = calculate_checksum(frame.data, frame.len);
-        uint8_t has_error = (computed_checksum != frame.checksum);
-        
-        if (has_error) {
-            printf("    Checksum error detected! Requesting retransmission\n");
-            send_ack(client_fd, frame.seq, 1);  // Request retransmission
-            continue;
-        }
-        
-        // Validate parity as a secondary check
-        uint8_t computed_parity = calculate_parity(frame.data, frame.len);
-        if (computed_parity != frame.parity) {
-            printf("    Parity error detected! Requesting retransmission\n");
-            send_ack(client_fd, frame.seq, 1);  // Request retransmission
-            continue;
-        }
-        
-        // Process in-sequence frame
-        if (frame.seq == expected_seq) {
-            // Deliver to application
-            frame.data[frame.len] = '\0';
-            printf("    Delivered: \"%s\"\n", frame.data);
-            send_ack(client_fd, expected_seq, 0);
-            expected_seq = (expected_seq + 1) % MAX_SEQ_NUM;
+        Ack ack;
+        if (f.seq == expected_seq) {
+            // deliver
+            f.data[f.len] = '\0';
+            printf("    Delivered: \"%s\"\n", f.data);
+            ack.ack = expected_seq;
+            expected_seq++;
         } else {
-            // Out-of-order frame
-            uint8_t prev_seq = (expected_seq + MAX_SEQ_NUM - 1) % MAX_SEQ_NUM;
-            printf("    Out-of-order frame (expected %d)\n", expected_seq);
-            send_ack(client_fd, prev_seq, 0);
+            // out-of-order: re-ACK last in-order
+            ack.ack = expected_seq-1;
+            printf("    Out-of-order (exp=%d), re-ACK %d\n",
+                   expected_seq, ack.ack);
         }
+
+        // send ACK back
+        int as = accept_conn(ack_lst);
+        write(as, &ack, sizeof(ack));
+        close(as);
     }
 
-    close(client_fd);
     return 0;
 }
