@@ -49,9 +49,20 @@ int main(void) {
             continue;
         }
 
-        n = recv(conn_fd, buf, BUF_SIZE, 0);
-        if (n > 0) {
-            printf("Received: %.*s\n", (int)n, buf);
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(client_addr.sin_addr), client_ip, INET_ADDRSTRLEN);
+        printf("Client connected: %s\n", client_ip);
+        
+        // Process messages from this client in a loop
+        while (1) {
+            n = recv(conn_fd, buf, BUF_SIZE, 0);
+            if (n <= 0) {
+                // Client disconnected or error
+                printf("Client disconnected: %s\n", client_ip);
+                break;
+            }
+            
+            printf("Received from %s: %.*s\n", client_ip, (int)n, buf);
             send(conn_fd, buf, n, 0);  /* Echo back */
         }
 

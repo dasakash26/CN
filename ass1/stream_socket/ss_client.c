@@ -6,15 +6,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define SERVER_IP    "127.0.0.1"
-#define SERVER_PORT  8080
+#define SERVER_IP    "172.16.14.49"
+#define SERVER_PORT  27000
 #define BUF_SIZE     1024
 
 int main(void) {
     int sock_fd;
     struct sockaddr_in serv_addr;
     char buf[BUF_SIZE];
-    const char *msg = "Hello, TCP server!";
+    char input[BUF_SIZE];
     ssize_t n;
 
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -33,11 +33,26 @@ int main(void) {
         return 1;
     }
 
-    send(sock_fd, msg, strlen(msg), 0);
+    printf("Connected to %s:%d\n", SERVER_IP, SERVER_PORT);
+    
+    while(1) {
+        printf("Enter message (type 'exit' to quit): ");
+        fgets(input, BUF_SIZE, stdin);
+        
+        // Remove newline character
+        input[strcspn(input, "\n")] = 0;
+        
+        // Check if user wants to exit
+        if (strcmp(input, "exit") == 0) {
+            break;
+        }
+        
+        send(sock_fd, input, strlen(input), 0);
 
-    n = recv(sock_fd, buf, BUF_SIZE, 0);
-    if (n > 0) {
-        printf("Echoed: %.*s\n", (int)n, buf);
+        n = recv(sock_fd, buf, BUF_SIZE, 0);
+        if (n > 0) {
+            printf("Echoed: %.*s\n", (int)n, buf);
+        }
     }
 
     close(sock_fd);
