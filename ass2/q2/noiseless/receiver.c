@@ -1,6 +1,4 @@
 #include <stdio.h>
-#include <string.h>
-#include <unistd.h>
 #include <arpa/inet.h>
 
 #define MAX_DATA_SIZE 1024
@@ -50,7 +48,6 @@ void Receiver() {
 
     printf("[Receiver] Listening on port %d...\n", SERVER_PORT);
 
-    // Loop to accept multiple connections
     while (1) {
         addr_len = sizeof(server_addr);
         client_fd = accept(server_fd, NULL, NULL);
@@ -64,13 +61,12 @@ void Receiver() {
             printf("[Receiver] Received frame with seq: %d, data: \"%s\"\n", frame.seq, frame.data);
             DeliverData(frame.data);
 
-            // Send ACK
             ack.ack = frame.seq;
             send(client_fd, &ack, sizeof(Ack), 0);
             printf("[Receiver] Sent ACK: %d\n", ack.ack);
         }
 
-        close(client_fd); // ready for next sender connection
+        close(client_fd); 
     }
 
     close(server_fd);

@@ -4,7 +4,7 @@
 #include <arpa/inet.h>
 
 #define MAX_DATA_SIZE 1024
-#define SERVER_IP "127.0.0.1"
+#define SERVER_IP "172.18.8.27"
 #define SERVER_PORT 12345
 
 typedef struct {
@@ -18,13 +18,13 @@ typedef struct {
 
 void WaitForEventSender() {
     printf("[Sender] Waiting for request...\n");
-    sleep(1);
+    sleep(3);
 }
 
 void GetData(char* buffer) {
     printf("[Sender] Enter data to send (type 'exit' to quit): ");
     fgets(buffer, MAX_DATA_SIZE, stdin);
-    buffer[strcspn(buffer, "\n")] = '\0'; // Remove newline
+    buffer[strcspn(buffer, "\n")] = '\0'; 
 }
 
 Frame MakeFrame(const char* data, int seq) {
@@ -55,11 +55,9 @@ void SendFrameOverTCP(Frame frame, const char* ip, int port) {
         return;
     }
 
-    // Send the frame
     send(sockfd, &frame, sizeof(Frame), 0);
     printf("[Sender] Sent frame with seq: %d, data: \"%s\"\n", frame.seq, frame.data);
 
-    // Wait for ACK
     recv(sockfd, &ack, sizeof(Ack), 0);
     printf("[Sender] Received ACK: %d\n", ack.ack);
 
@@ -85,7 +83,7 @@ void Sender() {
 
         Frame frame = MakeFrame(buffer, seq);
         SendFrameOverTCP(frame, SERVER_IP, SERVER_PORT);
-        seq = (seq + 1) % 2; // Toggle between 0 and 1 for stop-and-wait
+        seq = (seq + 1) % 2; 
     }
 }
 

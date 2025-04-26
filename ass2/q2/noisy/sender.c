@@ -6,7 +6,7 @@
 #include <time.h>
 
 #define MAX_DATA_SIZE 1024
-#define SERVER_IP "127.0.0.1"
+#define SERVER_IP "172.18.8.27"
 #define SERVER_PORT 12345
 
 typedef struct {
@@ -21,7 +21,7 @@ typedef struct {
 void GetData(char* buffer) {
 	printf("[Sender] Enter data to send (or type 'exit' to quit): ");
 	fgets(buffer, MAX_DATA_SIZE, stdin);
-	buffer[strcspn(buffer, "\n")] = '\0';  // remove trailing newline
+	buffer[strcspn(buffer, "\n")] = '\0'; 
 }
 
 Frame MakeFrame(const char* data, int seq) {
