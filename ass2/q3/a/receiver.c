@@ -1,4 +1,3 @@
-// receiver.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,95 +6,120 @@
 
 #define MAX_DATA_SIZE   1024
 #define SERVER_PORT     12345
-#define ACK_PORT        12346
+#define MAX_SEQ_NUM     3      // Added missing definition
 
 typedef struct {
     uint8_t seq;
     uint16_t len;
+    uint16_t checksum;
     char data[MAX_DATA_SIZE];
 } __attribute__((packed)) Frame;
 
 typedef struct {
     uint8_t ack;
+    uint8_t error;
 } __attribute__((packed)) Ack;
 
-int init_socket() {
-    int sockfd;
-    struct sockaddr_in recv_addr;
+// Simple checksum - sum all bytes and return the 16-bit complement
+uint16_t calculate_checksum(const char* data, size_t length) {
+    uint16_t sum = 0;
+    for (size_t i = 0; i < length; i++) {
+        sum += (uint8_t)data[i];
+    }
+    return ~sum; // Return 1's complement
+}
 
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) {
+int start_server() {
+    int server_fd, client_fd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
+    // Create and setup server socket
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("socket");
         exit(1);
     }
 
-    memset(&recv_addr, 0, sizeof(recv_addr));
-    recv_addr.sin_family = AF_INET;
-    recv_addr.sin_port = htons(SERVER_PORT);
-    recv_addr.sin_addr.s_addr = INADDR_ANY;
+    int reuse = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     
-    if (bind(sockfd, (struct sockaddr*)&recv_addr, sizeof(recv_addr)) < 0) {
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(SERVER_PORT);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    
+    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         perror("bind");
         exit(1);
     }
 
-    return sockfd;
-}
-
-uint8_t process_frame(Frame *frame, uint8_t expected_seq) {
-    printf("[RCV] Got Seq=%d, %d bytes\n", frame->seq, frame->len);
-    
-    if (frame->seq == expected_seq) {
-        // Deliver to application
-        frame->data[frame->len] = '\0';
-        printf("    Delivered: \"%s\"\n", frame->data);
-        return expected_seq;
-    } else {
-        // Out-of-order: re-ACK last in-order
-        uint8_t last_ack = (expected_seq - 1);
-        printf("    Out-of-order (exp=%d), re-ACK %d\n", expected_seq, last_ack);
-        return last_ack;
+    // Listen and accept connection
+    if (listen(server_fd, 1) < 0) {
+        perror("listen");
+        exit(1);
     }
+    
+    printf("Waiting for connection on port %d...\n", SERVER_PORT);
+    if ((client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len)) < 0) {
+        perror("accept");
+        exit(1);
+    }
+    
+    printf("Connected to %s\n", inet_ntoa(client_addr.sin_addr));
+    close(server_fd);
+    return client_fd;
 }
 
-// Send ACK back to sender
-void send_ack(int sockfd, struct sockaddr_in *sender_addr, socklen_t sender_len, uint8_t ack_num) {
-    Ack ack;
-    ack.ack = ack_num;
-    
-    // Set port for ACK
-    sender_addr->sin_port = htons(ACK_PORT);
-    
-    sendto(sockfd, &ack, sizeof(ack), 0,
-           (struct sockaddr*)sender_addr, sender_len);
+void send_ack(int sock, uint8_t seq_num, uint8_t has_error) {
+    Ack ack = {.ack = seq_num, .error = has_error};
+    send(sock, &ack, sizeof(ack), 0);
+    printf("[ACK] Sent ACK=%d, Error=%d\n", seq_num, has_error);
 }
 
 int main() {
-    int sockfd = init_socket();
+    int client_fd = start_server();
     uint8_t expected_seq = 0;
-    struct sockaddr_in sender_addr;
-    socklen_t sender_len = sizeof(sender_addr);
     
-    printf("---- Go-Back-N Receiver ----\n");
+    printf("---- Simplified TCP Receiver ----\n");
 
     while (1) {
+        // Receive frame
         Frame frame;
-        int n = recvfrom(sockfd, &frame, sizeof(frame), 0,
-                     (struct sockaddr*)&sender_addr, &sender_len);
-                     
-        if (n < (int)(sizeof(uint8_t) + sizeof(uint16_t)))
-            continue;
+        int bytes = recv(client_fd, &frame, sizeof(frame), 0);
+        
+        if (bytes <= 0) {
+            if (bytes == 0) printf("Connection closed by sender\n");
+            else perror("recv");
+            break;
+        }
+        
+        printf("[RCV] Got frame Seq=%d, %d bytes\n", frame.seq, frame.len);
 
-        // Process frame and get ACK number
-        uint8_t ack_num = process_frame(&frame, expected_seq);
+        // Validate checksum
+        uint16_t computed_checksum = calculate_checksum(frame.data, frame.len);
+        uint8_t has_error = (computed_checksum != frame.checksum);
         
-        // Update expected sequence if frame was in order
-        if (ack_num == expected_seq)
-            expected_seq++;
+        if (has_error) {
+            printf("    Checksum error detected!\n");
+            send_ack(client_fd, frame.seq, 1);  // Request retransmission
+            continue;
+        }
         
-        // Send ACK back
-        send_ack(sockfd, &sender_addr, sender_len, ack_num);
+        // Process in-sequence frame
+        if (frame.seq == expected_seq) {
+            // Deliver to application
+            frame.data[frame.len] = '\0';
+            printf("    Delivered: \"%s\"\n", frame.data);
+            send_ack(client_fd, expected_seq, 0);
+            expected_seq = (expected_seq + 1) % MAX_SEQ_NUM;
+        } else {
+            // Out-of-order frame
+            uint8_t prev_seq = (expected_seq + MAX_SEQ_NUM - 1) % MAX_SEQ_NUM;
+            printf("    Out-of-order frame (expected %d)\n", expected_seq);
+            send_ack(client_fd, prev_seq, 0);
+        }
     }
 
+    close(client_fd);
     return 0;
 }
