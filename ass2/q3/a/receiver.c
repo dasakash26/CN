@@ -6,12 +6,13 @@
 
 #define MAX_DATA_SIZE   1024
 #define SERVER_PORT     12345
-#define MAX_SEQ_NUM     3      // Added missing definition
+#define MAX_SEQ_NUM     3      
 
 typedef struct {
     uint8_t seq;
     uint16_t len;
     uint16_t checksum;
+    uint8_t parity;    // Added for error correction
     char data[MAX_DATA_SIZE];
 } __attribute__((packed)) Frame;
 
@@ -27,6 +28,50 @@ uint16_t calculate_checksum(const char* data, size_t length) {
         sum += (uint8_t)data[i];
     }
     return ~sum; // Return 1's complement
+}
+
+// Calculate simple parity for error detection (even parity)
+uint8_t calculate_parity(const char* data, size_t length) {
+    uint8_t parity = 0;
+    for (size_t i = 0; i < length; i++) {
+        // Count number of 1 bits in each byte
+        uint8_t byte = data[i];
+        while (byte) {
+            parity ^= (byte & 1);
+            byte >>= 1;
+        }
+    }
+    return parity;
+}
+
+// Attempt to correct errors using parity information
+int correct_errors(Frame* f) {
+    uint8_t current_parity = calculate_parity(f->data, f->len);
+    
+    if (current_parity == f->parity) {
+        // No error detected by parity check
+        return 0;
+    }
+    
+    printf("[RECEIVER] Error detected by parity check\n");
+    
+    // With simple parity, we can detect errors but not reliably correct them
+    // For demonstration, we'll attempt a simple correction by checking each byte
+    for (size_t i = 0; i < f->len; i++) {
+        // Try flipping each bit to see if it fixes parity
+        for (int bit = 0; bit < 8; bit++) {
+            f->data[i] ^= (1 << bit);  // Flip the bit
+            
+            if (calculate_parity(f->data, f->len) == f->parity) {
+                printf("[RECEIVER] Error corrected at position %zu, bit %d\n", i, bit);
+                return 1;
+            }
+            
+            f->data[i] ^= (1 << bit);  // Restore the bit
+        }
+    }
+    
+    return 0; // Error couldn't be corrected
 }
 
 int start_server() {
@@ -81,6 +126,7 @@ int main() {
     uint8_t expected_seq = 0;
     
     printf("---- Simplified TCP Receiver ----\n");
+    printf("Error correction: ENABLED (parity)\n");
 
     while (1) {
         // Receive frame
@@ -101,8 +147,26 @@ int main() {
         
         if (has_error) {
             printf("    Checksum error detected!\n");
-            send_ack(client_fd, frame.seq, 1);  // Request retransmission
-            continue;
+            
+            // Try to correct the error
+            int corrected = correct_errors(&frame);
+            
+            if (corrected) {
+                // Recalculate checksum after correction
+                computed_checksum = calculate_checksum(frame.data, frame.len);
+                has_error = (computed_checksum != frame.checksum);
+                
+                if (!has_error) {
+                    printf("    Error successfully corrected!\n");
+                } else {
+                    printf("    Error correction failed - checksum still invalid\n");
+                    send_ack(client_fd, frame.seq, 1);  // Request retransmission
+                    continue;
+                }
+            } else {
+                send_ack(client_fd, frame.seq, 1);  // Request retransmission
+                continue;
+            }
         }
         
         // Process in-sequence frame

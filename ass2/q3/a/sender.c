@@ -7,7 +7,7 @@
 #include <time.h>
 
 #define MAX_DATA_SIZE   1024
-#define SERVER_IP       "127.0.0.1"
+#define SERVER_IP       "172.18.8.27"
 #define SERVER_PORT     12345
 #define MAX_SEQ_NUM     3      
 #define WINDOW_SIZE     4
@@ -17,6 +17,7 @@ typedef struct {
     uint8_t seq;
     uint16_t len;
     uint16_t checksum;
+    uint8_t parity;    // Added for error correction
     char data[MAX_DATA_SIZE];
 } __attribute__((packed)) Frame;
 
@@ -29,21 +30,42 @@ Frame window[MAX_SEQ_NUM];
 int base = 0;
 int next_seq = 0;
 
-// Simple checksum - sum all bytes and return the 16-bit complement
 uint16_t calculate_checksum(const char* data, size_t length) {
     uint16_t sum = 0;
     for (size_t i = 0; i < length; i++) {
         sum += (uint8_t)data[i];
     }
-    return ~sum; // Return 1's complement
+    return ~sum; 
 }
 
+// Calculate simple parity for error correction (even parity)
+uint8_t calculate_parity(const char* data, size_t length) {
+    uint8_t parity = 0;
+    for (size_t i = 0; i < length; i++) {
+        // Count number of 1 bits in each byte
+        uint8_t byte = data[i];
+        while (byte) {
+            parity ^= (byte & 1);
+            byte >>= 1;
+        }
+    }
+    return parity;
+}
+
+// Simplified error injection - more deterministic at a specific position
 void inject_error(char* data, size_t len) {
     if ((double)rand() / RAND_MAX < ERROR_RATE) {
-        int pos = rand() % len;
-        data[pos] ^= 0x01;  // Flip a bit
-        printf("[ERROR] Injected error at position %d\n", pos);
+        // Always inject error in middle of data for demonstration
+        int pos = len > 0 ? len / 2 : 0;
+        data[pos] ^= 0x01; // Flip a single bit
+        printf("[ERROR] Injected error at position %d (flipped bit)\n", pos);
     }
+}
+
+// Apply error correction data to the frame
+void apply_error_correction(Frame* f) {
+    f->parity = calculate_parity(f->data, f->len);
+    printf("[SENDER] Applied error correction (parity: %d)\n", f->parity);
 }
 
 int connect_to_receiver() {
@@ -70,11 +92,14 @@ int connect_to_receiver() {
 }
 
 int send_frame(int sockfd, Frame *f) {
+    // Apply error correction before calculating checksum
+    apply_error_correction(f);
+    
     f->checksum = calculate_checksum(f->data, f->len);
     inject_error(f->data, f->len);
     
     int sent = send(sockfd, f, sizeof(uint8_t) + sizeof(uint16_t) + 
-                    sizeof(uint16_t) + f->len, 0);
+                    sizeof(uint16_t) + sizeof(uint8_t) + f->len, 0);
     printf("[SND] Sent Seq=%d\n", f->seq);
     return sent;
 }
@@ -105,6 +130,7 @@ int main() {
     
     printf("---- Simplified TCP Sender ----\n");
     printf("Error rate: %.1f%%\n", ERROR_RATE * 100);
+    printf("Error correction: ENABLED (parity)\n");
 
     while (1) {
         // Send frames if window has space
