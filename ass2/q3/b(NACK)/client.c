@@ -12,6 +12,7 @@
 #define FRAME_SIZE 64
 #define TIMEOUT 2
 #define MAX_FRAMES 10
+#define SERV_IP ""  // Replace with actual server IP
 
 struct frame {
     int seq_num;
@@ -23,11 +24,11 @@ int frame_lost() {
     return rand() % 10 < 2; // 20% chance
 }
 
-void sender_non_nack(int sock, struct sockaddr_in *addr) {
+void sender_nack(int sock, struct sockaddr_in *addr) {
     struct frame sent_frames[MAX_FRAMES];
     int ack_received[MAX_FRAMES] = {0};
     int total_frames = 0;
-    char ack[MAX_BUF];
+    char response[MAX_BUF];
     socklen_t addr_len = sizeof(*addr);
 
     srand(time(NULL)); // Seed for randomness
@@ -54,7 +55,7 @@ void sender_non_nack(int sock, struct sockaddr_in *addr) {
 
     int base = 0;
 
-    // Start Go-Back-N
+    // Start Go-Back-N with NACK
     while (base < total_frames) {
         int window_end = (base + WINDOW_SIZE < total_frames) ? base + WINDOW_SIZE : total_frames;
 
@@ -70,44 +71,37 @@ void sender_non_nack(int sock, struct sockaddr_in *addr) {
             }
         }
 
-        // Wait for ACKs within timeout period
+        // Wait for ACK or NACK
         struct timeval tv;
         tv.tv_sec = TIMEOUT;
         tv.tv_usec = 0;
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-        int received_ack = 0;
-        while (1) {
-            ssize_t len = recvfrom(sock, ack, MAX_BUF, 0, (struct sockaddr *)addr, &addr_len);
-            if (len > 0) {
-                ack[len] = '\0';
-                printf("Received ACK: %s\n", ack);
+        ssize_t len = recvfrom(sock, response, MAX_BUF, 0, (struct sockaddr *)addr, &addr_len);
+        if (len > 0) {
+            response[len] = '\0';
+            printf("Received response: %s\n", response);
 
-                int ack_num;
-                if (sscanf(ack, "ACK for %d", &ack_num) == 1) {
-                    if (ack_num >= base && ack_num < total_frames) {
-                        ack_received[ack_num] = 1;
-                        received_ack = 1;
+            int seq_num;
+            if (sscanf(response, "ACK for %d", &seq_num) == 1) {
+                if (seq_num >= base && seq_num < total_frames) {
+                    ack_received[seq_num] = 1;
 
-                        // Slide the window base
-                        while (ack_received[base] && base < total_frames) {
-                            base++;
-                        }
-                    } else {
-                        printf("Ignored invalid ACK number: %d\n", ack_num);
+                    // Slide the window base
+                    while (ack_received[base] && base < total_frames) {
+                        base++;
                     }
                 } else {
-                    printf("Malformed ACK received: %s\n", ack);
+                    printf("Ignored invalid ACK number: %d\n", seq_num);
                 }
+            } else if (sscanf(response, "NACK for %d", &seq_num) == 1) {
+                printf("NACK received for frame %d. Resending from frame %d\n", seq_num, seq_num);
+                base = seq_num; // Adjust the base to retransmit from the requested frame
             } else {
-                // Timeout or no ACK received
-                printf("No ACK received within timeout. Resending window...\n");
-                break;
+                printf("Malformed response received: %s\n", response);
             }
-        }
-
-        if (!received_ack) {
-            sleep(TIMEOUT); // Pause before resending
+        } else {
+            printf("No response within timeout. Resending from frame %d\n", base);
         }
     }
 
@@ -126,9 +120,9 @@ int main() {
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(PORT);
-    serv_addr.sin_addr.s_addr = inet_addr("172.16.5.16");
+    serv_addr.sin_addr.s_addr = inet_addr(SERV_IP);
 
-    sender_non_nack(sock, &serv_addr);
+    sender_nack(sock, &serv_addr);
 
     close(sock);
     return 0;

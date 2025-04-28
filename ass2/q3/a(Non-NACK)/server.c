@@ -51,13 +51,11 @@ int main() {
     int server_fd;
     struct sockaddr_in address;
 
-    // Create the UDP socket
     if ((server_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         perror("Socket creation failed");
         return -1;
     }
 
-    // Set up the server address struct
     address.sin_family = AF_INET;
     address.sin_port = htons(PORT);
     address.sin_addr.s_addr = INADDR_ANY;
